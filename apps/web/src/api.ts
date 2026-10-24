@@ -1,5 +1,7 @@
 // 类型统一来自 @framebaker/shared，这里再导出方便组件单点引入
 import type {
+  AnimationAdapterSummary,
+  CompatibilityReport,
   Frame,
   FramePatch,
   FrameResponse,
@@ -266,4 +268,34 @@ export const api = {
   copyAnimationAsset: (id: string, name?: string, folderId?: string | null) =>
     req<AnimationAssetResponse>(`/api/animation-assets/${id}/copy`, { method: "POST", ...json({ ...(name ? { name } : {}), ...(folderId !== undefined ? { folderId } : {}) }) }).then((r) => r.animationAsset),
   deleteAnimationAsset: (id: string) => req<OkResponse>(`/api/animation-assets/${id}`, { method: "DELETE" }),
+  listAnimationAdapters: () => req<{ adapters: AnimationAdapterSummary[] }>("/api/animation-adapters").then((r) => r.adapters),
+  /** 外部格式 → .fbanim ZIP（Blob），附带兼容性报告。 */
+  importWithAnimationAdapter: async (id: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const result = await adapterReq<{ report: CompatibilityReport; fbanim: string }>(`/api/animation-adapters/${encodeURIComponent(id)}/import`, fd);
+    return { report: result.report, fbanim: new Blob([base64Bytes(result.fbanim)], { type: "application/zip" }) };
+  },
+  /** .fbanim ZIP → 外部格式文件，附带兼容性报告。 */
+  exportWithAnimationAdapter: async (id: string, fbanim: Blob) => {
+    const fd = new FormData();
+    fd.append("file", fbanim, "package.fbanim");
+    const result = await adapterReq<{ report: CompatibilityReport; file: { name: string; data: string } }>(`/api/animation-adapters/${encodeURIComponent(id)}/export`, fd);
+    return { report: result.report, file: new File([base64Bytes(result.file.data)], result.file.name) };
+  },
 };
+
+const base64Bytes = (value: string) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+
+/** adapter 失败时服务端返回 { error, report }：抛出带报告的错误，便于界面列出具体问题。 */
+export class AnimationAdapterRequestError extends Error {
+  constructor(message: string, readonly report: CompatibilityReport | null) { super(message); }
+}
+async function adapterReq<T>(url: string, body: FormData): Promise<T> {
+  const res = await fetch(url, { method: "POST", body });
+  if (res.ok) return (await res.json()) as T;
+  const text = await res.text();
+  let parsed: { error?: string; report?: CompatibilityReport | null } | undefined;
+  try { parsed = JSON.parse(text); } catch { /* 非 JSON 错误体按原文显示 */ }
+  throw new AnimationAdapterRequestError(parsed?.error ?? (text || `HTTP ${res.status}`), parsed?.report ?? null);
+}

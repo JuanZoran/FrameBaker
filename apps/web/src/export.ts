@@ -1,4 +1,4 @@
-import { buildFbanimV2Entries, type MotionClip, type SkeletalProjectDocument, type Skeleton } from "@framebaker/shared";
+import { buildFbanimV2Entries, type CompatibilityReport, type MotionClip, type SkeletalProjectDocument, type Skeleton } from "@framebaker/shared";
 import { api, frameImageUrl, materialImageUrl, type Frame, type TimelineResponse } from "./api";
 import type { AttackEffectCell } from "./api";
 import { attackEffectBounds, drawAttackEffect } from "./attackEffect";
@@ -22,6 +22,17 @@ function safeFilename(name: string): string {
 
 /** 导出可直接接入游戏运行时的骨骼包：骨架、项目角色、动作配置、MotionClip 与 PNG 纹理闭包。 */
 export async function exportSkeletalProjectPackage(name: string, document: SkeletalProjectDocument, skeleton: Skeleton): Promise<void> {
+  download(await buildSkeletalProjectPackage(document, skeleton), `${safeFilename(name)}.zip`);
+}
+
+/** 先打包为 .fbanim，再交给服务端 adapter 转为外部格式下载；返回 adapter 的兼容性报告。 */
+export async function exportSkeletalProjectWithAdapter(adapterId: string, document: SkeletalProjectDocument, skeleton: Skeleton): Promise<CompatibilityReport> {
+  const { file, report } = await api.exportWithAnimationAdapter(adapterId, await buildSkeletalProjectPackage(document, skeleton));
+  download(file, safeFilename(file.name));
+  return report;
+}
+
+async function buildSkeletalProjectPackage(document: SkeletalProjectDocument, skeleton: Skeleton): Promise<Blob> {
   if (!document.character) throw new Error("项目尚未组装角色");
   const actions = await Promise.all(document.animations.map(async (action) => {
     const { asset } = await api.getAnimationAsset(action.motionClipId);
@@ -40,7 +51,7 @@ export async function exportSkeletalProjectPackage(name: string, document: Skele
     actions,
     textures,
   });
-  download(await createZip(entries.map((entry) => ({ name: entry.path, data: entry.bytes }))), `${safeFilename(name)}.zip`);
+  return createZip(entries.map((entry) => ({ name: entry.path, data: entry.bytes })));
 }
 
 /** 导出单个素材图片：raw=原图，processed=抠图后（单张直接下载） */

@@ -8,9 +8,22 @@ import { getGenProviders, getImageLayerSettings, imageLayerConfigured, providerC
 import { isModelCached, runDoctor } from "../../doctor";
 import { enhancePrompt } from "../../enhance";
 import { getQueueConcurrency } from "../../queue";
+import { listAnimationAdapters } from "../../animationAdapters";
 import { ok, err } from "../helpers";
 
 export function register(server: McpServer) {
+  server.registerTool(
+    "list_animation_adapters",
+    {
+      title: "List Animation Adapters",
+      description:
+        "List registered external animation format adapters (loaded from FRAMEBAKER_ANIMATION_ADAPTERS or registered by an embedding host). Each entry reports id, name, version, importable file extensions and whether import/export are supported; conversion itself goes through POST /api/animation-adapters/:id/import|export.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async () => ok({ adapters: listAnimationAdapters() }),
+  );
+
   server.registerTool(
     "get_config",
     {

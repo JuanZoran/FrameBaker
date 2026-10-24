@@ -396,6 +396,16 @@ multipart/form-data：`file`（PNG）+ `slot`（`"raw"` | `"processed"`）。剪
 - `GET /api/projects/:id/skeletal-document` 读取骨骼项目文档，`PUT` 整体替换。项目文档拥有角色 CharacterBinding 和素材引用；项目动作只能引用 `skeletonId` 完全相同的 MotionClip。
 - MotionClip `schemaVersion: 1` 保持轨道级 `step | linear`。MotionClip `schemaVersion: 2` 不再含轨道级 interpolation，每个 key 必须携带 `outInterpolation`：非末尾 key 使用 `{ type: "step" | "linear" }` 或 `{ type: "cubic-bezier", x1, y1, x2, y2 }`，末尾 key 固定为 `null`。贝塞尔控制量必须是 `[0, 1]` 内的有限数值。
 - 读取或保存 v1 不会自动升级；只有用户明确选择曲线时编辑器才升级到 v2。`.fbanim` 包版本与包内 MotionClip schema 版本独立演进。
+- 除骨骼轨道外，MotionClip 还接受 `att:<attachmentId>` 部件偏移轨道（`translation`/`rotation`/`scale`/`deform`/`warp`/`skew`），以及 `slot:<slotId>` 插槽轨道：其 `attachment` 通道仅允许 step，关键帧值为附件 ID 或 `null`（隐藏）。构建或校验 `.fbanim` 包时会按绑定检查插槽与附件引用。详见 `docs/pose-motion-system.md` §15–16。
+
+## 动画格式 adapter /api/animation-adapters
+
+外部动画格式通过 adapter（`@framebaker/shared` 的 `AnimationPackageAdapter`）与 `.fbanim` v2 双向转换。服务端加载 `FRAMEBAKER_ANIMATION_ADAPTERS` 列出的模块（按系统路径分隔符分隔，相对路径按启动目录解析；模块默认导出单个 adapter、adapter 数组，或导出 `adapters`），内嵌 FrameBaker 的宿主也可直接调用 `registerAnimationAdapter()`。adapter 只做格式映射，这些接口不会写库。
+
+- `GET /api/animation-adapters` → `{ "adapters": [{ "id", "name", "version", "extensions", "canImport", "canExport" }] }`。
+- `POST /api/animation-adapters/:id/import`（multipart `file`）→ `{ "report", "fbanim": "<base64 的 .fbanim ZIP>" }`。包会经 `buildFbanimV2Entries` 重新构建，与手工包走同样的校验；前端随后执行常规骨骼包导入。
+- `POST /api/animation-adapters/:id/export`（multipart `file` 为 `.fbanim` ZIP）→ `{ "report", "file": { "name", "data": "<base64>" } }`。输入在交给 adapter 前完成完整校验。
+- `report` 为 `CompatibilityReport`：`{ adapter: { id, version }, issues: [{ severity: "info" | "warning" | "error", code, message, assetId? }] }`。含 `error` 的报告返回 `422 { "error", "report" }`；未知 adapter 返回 `404`，不支持的方向或无效输入返回 `400`。
 
 ## 其他
 
@@ -495,7 +505,7 @@ claude mcp add framebaker --transport http http://localhost:3000/mcp
 ```
 FrameBaker 正在 http://localhost:3000 运行，MCP 端点为 /mcp（Streamable HTTP）。
 请连接并调用 list_projects 开始。
-可用工具：list_projects、create_project、list_frames、generate_frames、list_materials、matting_material、list_jobs、get_config 等共 48 个。
+可用工具：list_projects、create_project、list_frames、generate_frames、list_materials、matting_material、list_jobs、get_config 等共 49 个。
 覆盖功能：像素动画项目、帧、素材、AI 生成、抠图、文件夹、任务与系统设置。
 ```
 

@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BUILTIN_HUMANOID_SKELETON_ID, stripBuiltinAnimationMarker, verifyFbanimV2Entries, type AnimationAssetSummary, type CharacterBinding, type Material, type MotionClip, type SkeletalProjectAnimation, type Skeleton } from "@framebaker/shared";
+import { BUILTIN_HUMANOID_SKELETON_ID, findAnimationAdapterForFile, stripBuiltinAnimationMarker, verifyFbanimV2Entries, type AnimationAdapterSummary, type AnimationAssetSummary, type CompatibilityReport, type CharacterBinding, type Material, type MotionClip, type SkeletalProjectAnimation, type Skeleton } from "@framebaker/shared";
 import { ArrowLeft, Bone, Boxes, Camera, Download, Pause, Pencil, Play, Plus, Trash2, Upload, X } from "lucide-react";
-import { api, type Folder, type Project, type SkeletalProjectDocument } from "../api";
+import { AnimationAdapterRequestError, api, type Folder, type Project, type SkeletalProjectDocument } from "../api";
 import { wsClient } from "../api/ws";
 import { localizeSkeletonName } from "../builtinAnimationLabels";
 import { useModalEscClose } from "../hooks/useModalEscClose";
 import { useT } from "../i18n";
 import { askConfirm, notify } from "../notice";
-import { exportSkeletalProjectPackage } from "../export";
+import { exportSkeletalProjectPackage, exportSkeletalProjectWithAdapter } from "../export";
 import { readZip } from "../zip";
 import AnimationAssetsWorkspace, { BindingEditor, CharacterPreview, SkeletonEditor } from "./AnimationAssetsWorkspace";
 import MaterialImportModal from "./MaterialImportModal";
@@ -39,6 +39,15 @@ export default function SkeletalProjectEditor({ project, onBack }: { project: Pr
   const saveRevisionRef = useRef(0);
   const pendingSaveCountRef = useRef(0);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const [adapters, setAdapters] = useState<AnimationAdapterSummary[]>([]);
+  useEffect(() => { void api.listAnimationAdapters().then(setAdapters).catch(() => setAdapters([])); }, []);
+  // adapter 报告里的 warning/info 必须让用户看到：烘焙、近似和丢失都不能静默发生。
+  const notifyReport = (report: CompatibilityReport | null | undefined) => {
+    const issues = report?.issues ?? [];
+    if (!issues.length) return;
+    notify(t("skeletal.adapter.report", { count: issues.length, first: `${issues[0]!.code}: ${issues[0]!.message}` }), "info");
+  };
+  const adapterError = (e: unknown) => { if (e instanceof AnimationAdapterRequestError) notifyReport(e.report); return (e as Error).message; };
   const previewRef = useRef<HTMLDivElement>(null);
 
   // 把当前预览帧序列化成 PNG 上传为项目缩略图（image href 需转为绝对 URL，否则离屏渲染取不到图）
@@ -95,6 +104,19 @@ export default function SkeletalProjectEditor({ project, onBack }: { project: Pr
     }
   };
 
+  const exportWithAdapter = async (adapterId: string) => {
+    if (!skeleton || !document?.character || !document.animations.length || busy) return;
+    setBusy(true);
+    try {
+      notifyReport(await exportSkeletalProjectWithAdapter(adapterId, document, skeleton));
+      notify(t("skeletal.export.done"), "info");
+    } catch (e) {
+      notify(t("skeletal.export.failed", { msg: adapterError(e) }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const exportPackage = async () => {
     if (!skeleton || !document?.character || !document.animations.length) return;
     setBusy(true);
@@ -113,7 +135,15 @@ export default function SkeletalProjectEditor({ project, onBack }: { project: Pr
     if (document?.character && !(await askConfirm(t("skeletal.import.replaceConfirm")))) return;
     setBusy(true);
     try {
-      const verified = await verifyFbanimV2Entries((await readZip(file)).map((entry) => ({ path: entry.name, bytes: entry.data })));
+      // 外部格式先经服务端 adapter 转为 .fbanim，之后与手动导入走同一校验与入库流程。
+      const adapter = /\.(fbanim|zip)$/i.test(file.name) ? undefined : findAnimationAdapterForFile(adapters, file.name);
+      let packageBlob: Blob = file;
+      if (adapter) {
+        const converted = await api.importWithAnimationAdapter(adapter.id, file);
+        notifyReport(converted.report);
+        packageBlob = converted.fbanim;
+      }
+      const verified = await verifyFbanimV2Entries((await readZip(packageBlob)).map((entry) => ({ path: entry.name, bytes: entry.data })));
       if (!verified.ok) throw new Error(verified.issues[0]?.message ?? "包内容校验失败");
       const imported = verified.value;
       const skeletonId = `skeleton-${crypto.randomUUID()}`;
@@ -143,7 +173,7 @@ export default function SkeletalProjectEditor({ project, onBack }: { project: Pr
       if (!(await save(next))) throw new Error("项目文档保存失败");
       notify(t("skeletal.import.done"), "info");
     } catch (e) {
-      notify(t("skeletal.import.failed", { msg: (e as Error).message }));
+      notify(t("skeletal.import.failed", { msg: adapterError(e) }));
     } finally {
       setBusy(false);
     }
@@ -413,10 +443,11 @@ export default function SkeletalProjectEditor({ project, onBack }: { project: Pr
       <nav className="skeletal-project-tabs" aria-label={t("skeletal.workspaceTabs")}>
         <button type="button" className={`${tab === "character" ? "active " : ""}${binding ? "done" : ""}`} onClick={() => setTab("character")}><Boxes size={17} /> 1. {t("skeletal.tab.character")}</button>
         <button type="button" title={!binding ? t("skeletal.step.requiresCharacter") : undefined} className={`${tab === "animations" ? "active " : ""}${document.animations.length ? "done" : ""}`} onClick={() => binding ? setTab("animations") : undefined}><Play size={17} /> 2. {t("skeletal.tab.animations")} <span>{document.animations.length}</span></button>
-        <input ref={importInputRef} hidden type="file" accept=".zip,.fbanim,application/zip" onChange={(event) => { void importPackage(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+        <input ref={importInputRef} hidden type="file" accept={[".zip", ".fbanim", "application/zip", ...adapters.filter((adapter) => adapter.canImport).flatMap((adapter) => adapter.extensions)].join(",")} onChange={(event) => { void importPackage(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         <div className="skeletal-project-actions">
           <button type="button" className="skeletal-tab-action" disabled={busy} onClick={() => importInputRef.current?.click()}><Upload size={17} /> {t("skeletal.import.runtime")}</button>
           <button type="button" className="skeletal-tab-action" disabled={busy || !binding || !document.animations.length} onClick={() => void exportPackage()}><Download size={17} /> {t("skeletal.export.runtime")}</button>
+          {adapters.filter((adapter) => adapter.canExport).map((adapter) => <button key={adapter.id} type="button" className="skeletal-tab-action" title={`${adapter.id} ${adapter.version}`} disabled={busy || !binding || !document.animations.length} onClick={() => void exportWithAdapter(adapter.id)}><Download size={17} /> {t("skeletal.export.adapter", { name: adapter.name })}</button>)}
         </div>
       </nav>
 

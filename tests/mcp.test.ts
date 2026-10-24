@@ -70,6 +70,7 @@ describe("MCP 端点", () => {
     expect(names).toContain("create_project");
     expect(names).toContain("generate_frames");
     expect(names).toContain("get_config");
+    expect(names).toContain("list_animation_adapters");
     expect(names).toContain("rename_material");
     const tool = json.result.tools.find((t: any) => t.name === "list_projects");
     expect(tool.description).toBeTruthy();

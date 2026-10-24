@@ -30,10 +30,12 @@
 │   │                    import to project                            │
 │   ├─ api/settings.ts   Settings table read/write (layout/theme/     │
 │   │                    lang/genProviders/matting allowlist)          │
+│   ├─ api/animationAdapters.ts  External format ⇄ .fbanim via        │
+│   │                    registered adapters (animationAdapters.ts)   │
 │   └─ /api/jobs(/:id)   Job list (panel initial load) / single query │
 │                                                                     │
 │  mcp/ (MCP server: POST /mcp JSON-RPC 2.0 Streamable HTTP)         │
-│       48 tools directly operating db/internal modules for AI agents │
+│       49 tools directly operating db/internal modules for AI agents │
 │                                                                     │
 │  provider.ts (multi-gen provider / matting config: settings > env)  │
 │  providerAdapter.ts (generation validation/execution adapter +      │
@@ -100,6 +102,7 @@ Root `scripts/version.ts` implements the `MAJOR.WEEK.BUG` main-release policy an
 - **Image processing worker** (`apps/web/src/imageops/`): crop decode / transparent-edge bounding box scan / PNG encode run in Web Worker (OffscreenCanvas). Bun's HTML bundler doesn't handle `new Worker(new URL(...))` — worker script served via server route `GET /imageops/imageOps.worker.js` which `Bun.build`s on demand same-origin; `client.ts` lazy-loads singleton and auto-degrades to main-thread canvas on worker unavailable/error; pure computation (`ops.ts`) shared by both sides.
 - **Frame transform geometry** (`apps/web/src/frameGeometry.ts`): centralizes center-anchor, offset, rotation, scale axis-aligned bounding box, fit-to-view, and rotation normalization; Pixi `FrameEditor` and Canvas `export.ts` are two render adapters sharing the same geometric semantics.
 - **Import workflow** (`apps/web/src/hooks/useImportWorkflow.ts`): project import and material import share file state transitions, sequential upload, job polling, partial failure, timer cleanup, and completion summary; the two modals only provide their own FormData/API adapters; crop phase handled by `useCropQueue`.
+- **External animation format adapters** (`apps/server/src/animationAdapters.ts` + `api/animationAdapters.ts`): the registry is filled from `FRAMEBAKER_ANIMATION_ADAPTERS` plugin modules or a host's `registerAnimationAdapter()`; import results are rebuilt into `.fbanim` with `buildFbanimV2Entries`, export input is checked with `verifyFbanimV2Entries`, and a `CompatibilityReport` containing an error is rejected. ZIP read/write lives in `packages/shared/src/zip.ts`, shared by web and server.
 - **Web client boundaries**: `apps/web/src/api.ts` remains the compatibility facade for typed HTTP API methods and shared response types; media URL builders live in `api/mediaUrls.ts`, while the reconnecting application WebSocket client lives in `api/ws.ts`. New transport concerns should be added to their owning module instead of growing the facade.
 - **Generation provider adapter & artifact submission**: `providerAdapter.ts` resolves provider in real-time per job, encapsulates config/model/capability validation, CLI argv, API/CLI output dispatch, and doctor's model detection; `jobs/generatedArtifacts.ts` handles artifact allocation, media classification, frame/material/video commit, staging cleanup, broadcast, and auto-matting finalization. `jobs/extract.ts` only coordinates "output → commit"; API vendor protocols remain in `jobs/generateApi.ts`.
 
@@ -111,7 +114,7 @@ Root `scripts/version.ts` implements the `MAJOR.WEEK.BUG` main-release policy an
 AI client → POST /mcp { jsonrpc, method: "initialize" }
   → server returns protocolVersion/capabilities/serverInfo + Mcp-Session-Id
   → client sends notifications/initialized
-  → tools/list returns 48 tools
+  → tools/list returns 49 tools
   → tools/call { name, arguments } → direct db ops → returns { content: [{ type:"text", text:JSON }] }
 ```
 

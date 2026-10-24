@@ -270,6 +270,8 @@ character.fbanim
 
 Adapter 输出 `CompatibilityReport`，至少包含 `info/warning/error`、受影响资产、发生的烘焙或丢失。禁止静默丢弃 Mesh、约束、事件、Draw Order、曲线或根运动。
 
+接口已落地为 `@framebaker/shared` 的 `AnimationPackageAdapter`：adapter 在外部文件与 `FbanimV2PackageSource` 之间转换，不直接写库；服务端注册表（`FRAMEBAKER_ANIMATION_ADAPTERS` 插件模块或宿主 `registerAnimationAdapter()`）经 `/api/animation-adapters` 暴露导入/导出，导入结果必须通过 `.fbanim` v2 构建校验，报告含 error 时拒绝应用。上表格式均可作为独立插件实现，不要求进入主仓库。
+
 ## 7. Provider 与任务边界
 
 Provider 按能力声明，而不是按厂商名称扩展核心联合类型：

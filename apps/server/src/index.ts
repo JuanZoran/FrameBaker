@@ -1,7 +1,11 @@
 import { serve } from "bun";
 import index from "../../web/index.html";
 import { app } from "./app";
+import { loadAnimationAdapterPlugins } from "./animationAdapters";
 import { wsHandlers } from "./ws";
+
+const adapters = await loadAnimationAdapterPlugins();
+if (adapters.length) console.log(`动画格式 adapter：${adapters.join(", ")}`);
 
 const port = Number(process.env.PORT ?? 3000);
 

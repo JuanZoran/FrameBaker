@@ -396,6 +396,16 @@ Ranges: `layers` 1–4 (the current Gitee Qwen-Image-Layered endpoint rejects va
 - `GET /api/projects/:id/skeletal-document` reads a skeletal project's document; `PUT` replaces it. The document owns its character's CharacterBinding and material references. Project actions may reference only MotionClips with the exact same `skeletonId`.
 - MotionClip `schemaVersion: 1` keeps track-level `step | linear`. MotionClip `schemaVersion: 2` removes track-level interpolation and requires every key to carry `outInterpolation`: non-terminal keys use `{ type: "step" | "linear" }` or `{ type: "cubic-bezier", x1, y1, x2, y2 }`, while the terminal key uses `null`. Bézier controls must be finite values in `[0, 1]`.
 - Reading or saving v1 does not upgrade it. The editor upgrades to v2 only when the user explicitly selects a cubic curve. `.fbanim` package versions remain independent from embedded MotionClip schema versions.
+- Besides bone tracks, MotionClips accept `att:<attachmentId>` attachment offset tracks (`translation`/`rotation`/`scale`/`deform`/`warp`/`skew`) and `slot:<slotId>` tracks with a step-only `attachment` channel whose key values are an attachment id or `null` (hidden). Slot and attachment references are checked against the binding when a `.fbanim` package is built or verified. See `docs/pose-motion-system.md` §15–16.
+
+## Animation Format Adapters /api/animation-adapters
+
+External animation formats are converted to and from `.fbanim` v2 by adapters (`AnimationPackageAdapter` in `@framebaker/shared`). The server loads adapter modules listed in `FRAMEBAKER_ANIMATION_ADAPTERS` (paths separated by the OS path delimiter, resolved from the working directory; a module default-exports one adapter, an array, or exports `adapters`), and an embedding host may call `registerAnimationAdapter()` directly. Adapters only map formats; nothing is written to the library by these endpoints.
+
+- `GET /api/animation-adapters` → `{ "adapters": [{ "id", "name", "version", "extensions", "canImport", "canExport" }] }`.
+- `POST /api/animation-adapters/:id/import` (multipart `file`) → `{ "report", "fbanim": "<base64 .fbanim ZIP>" }`. The package is rebuilt with `buildFbanimV2Entries`, so it passes the same validation as a hand-made package; the web client then runs the regular skeletal import.
+- `POST /api/animation-adapters/:id/export` (multipart `file` = `.fbanim` ZIP) → `{ "report", "file": { "name", "data": "<base64>" } }`. The input is fully verified before the adapter sees it.
+- `report` is a `CompatibilityReport` `{ adapter: { id, version }, issues: [{ severity: "info" | "warning" | "error", code, message, assetId? }] }`. A report with any `error` is rejected with `422 { "error", "report" }`; unknown adapters return `404`, unsupported directions or invalid input `400`.
 
 ## Other
 
@@ -495,7 +505,7 @@ Copy and paste the following to your AI agent to get started:
 ```
 FrameBaker is running at http://localhost:3000 with an MCP server at /mcp (Streamable HTTP).
 Connect to it and use `list_projects` to get started.
-Available tools: list_projects, create_project, list_frames, generate_frames, list_materials, matting_material, list_jobs, get_config, and 40 more.
+Available tools: list_projects, create_project, list_frames, generate_frames, list_materials, matting_material, list_jobs, get_config, and 41 more.
 All tools manage pixel-art animation projects — frames, materials, generation, matting, folders, jobs, and settings.
 ```
 

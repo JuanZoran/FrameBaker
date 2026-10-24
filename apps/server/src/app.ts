@@ -15,6 +15,7 @@ import { materialsApi } from "./api/materials";
 import { settingsApi } from "./api/settings";
 import { foldersApi } from "./api/folders";
 import { animationAssetsApi } from "./api/animationAssets";
+import { animationAdaptersApi } from "./api/animationAdapters";
 import { skeletalProjectsApi } from "./api/skeletalProjects";
 import { characterPartSetsApi } from "./api/characterPartSets";
 import { beginProjectUndo, finishProjectUndo, undoProject } from "./undo";
@@ -244,6 +245,7 @@ export const app = new Elysia()
   .use(characterPartSetsApi)
   .use(foldersApi)
   .use(animationAssetsApi)
+  .use(animationAdaptersApi)
   .use(settingsApi)
   // MCP（Model Context Protocol）端点：Streamable HTTP 传输（SDK v2 自动处理 POST/GET/DELETE）
   .all("/mcp", ({ request }) => mcpHandler.fetch(request));
