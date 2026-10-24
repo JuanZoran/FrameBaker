@@ -4,6 +4,10 @@ This document records features, changes, and bug fixes by release. Main releases
 
 ## [Unreleased]
 
+### Added
+
+- Attachment offset tracks gain an `att:`-only `skew` property (`[skewX, skewY, 0]` radians) composed as T×R×K×S by the shared `attachmentOffsetMatrix`, so Flash/Animate-style kx/ky affines round-trip without affine warp workarounds; the motion editor exposes Skew X/Y fields.
+
 ### Fixed
 
 - Read large ZIP entries while decompression is producing output, avoiding a stream backpressure stall when importing animation packages.

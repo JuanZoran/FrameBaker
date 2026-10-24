@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { addMotionEvent, ATTACHMENT_TARGET_PREFIX, BUILTIN_ANIMATION_ASSET_IDS, closeMotionLoopSeam, DEFAULT_CUBIC_MOTION_INTERPOLATION, deleteMotionEvent, deleteMotionKeyframe, findMotionSegmentIndex, getBoneEndpoint, isAttachmentTargetId, isBuiltinAnimationAssetId, MOTION_KEY_TIME_EPSILON, multiplyMatrices, quaternionFromZRotation, reparentTransform2d, sampleMotionClip, setMotionSegmentInterpolation, transformPoint, transformToMatrix, upsertMotionKeyframe, zRotationFromQuaternion, type AnimationAsset, type AnimationAssetSummary, type AnyMotionTrack, type AttachmentOffset, type CharacterBinding, type CubicBezierMotionInterpolation, type JsonValue, type Mat4, type Material, type MotionClip, type MotionSegmentInterpolation, type MotionTrack, type MotionTrackV2, type RegionAttachmentWarp, type RootMotionPolicy, type Skeleton } from "@framebaker/shared";
+import { addMotionEvent, attachmentOffsetMatrix, ATTACHMENT_TARGET_PREFIX, BUILTIN_ANIMATION_ASSET_IDS, closeMotionLoopSeam, DEFAULT_CUBIC_MOTION_INTERPOLATION, deleteMotionEvent, deleteMotionKeyframe, findMotionSegmentIndex, getBoneEndpoint, isAttachmentTargetId, isBuiltinAnimationAssetId, MOTION_KEY_TIME_EPSILON, multiplyMatrices, quaternionFromZRotation, reparentTransform2d, sampleMotionClip, setMotionSegmentInterpolation, transformPoint, transformToMatrix, upsertMotionKeyframe, zRotationFromQuaternion, type AnimationAsset, type AnimationAssetSummary, type AnyMotionTrack, type AttachmentOffset, type CharacterBinding, type CubicBezierMotionInterpolation, type JsonValue, type Mat4, type Material, type MotionClip, type MotionSegmentInterpolation, type MotionTrack, type MotionTrackV2, type RegionAttachmentWarp, type RootMotionPolicy, type Skeleton } from "@framebaker/shared";
 import { ChevronDown, ChevronRight, Copy, Crosshair, Lock, Move, Pause, Pencil, Play, Plus, Redo2, RotateCcw, RotateCw, Save, Trash2, Undo2, Upload, Waves, ZoomIn } from "lucide-react";
 import { api, materialImageUrl, wsClient, type Folder } from "../api";
 import { attachmentLocalBounds, attachmentLocalCorners, attachmentSvgImageY, fitAttachmentSizeToImage } from "../bindingGeometry";
@@ -284,12 +284,6 @@ interface BindingTransformDrag {
   /** 控制点拖拽的网格与起始位移：绑定模式为静态 warp 值，动作模式为拖拽起始的轨道 delta 采样值。 */
   warpGrid?: [number, number];
   warpStart?: number[];
-}
-
-/** 部件偏移（att: 轨道采样值）转为叠加矩阵（T×R×S）；无偏移时返回 undefined，行为与之前完全一致。 */
-function attachmentOffsetMatrix(offset: AttachmentOffset | undefined): Mat4 | undefined {
-  if (!offset || (!offset.translation && !offset.rotation && !offset.scale)) return undefined;
-  return transformToMatrix({ translation: offset.translation ?? [0, 0, 0], rotation: offset.rotation ?? [0, 0, 0, 1], scale: offset.scale ?? [1, 1, 1] });
 }
 
 /** 部件当前有效 deform bend：绑定静态 bend + att: deform 轨道增量。 */
@@ -917,8 +911,8 @@ export function BindingEditor({ binding, skeleton, materials, materialFolders, b
 
 type AssetFilter = "all" | "skeleton" | "motion-clip";
 type PoseDraft = { tx: number; ty: number; rz: number; sx: number; sy: number };
-/** 部件偏移草稿：tx/ty 为 rest 后局部像素，rz 为角度制，sx/sy 为缩放倍率，bend 为 deform 弯曲增量，warp 为自描述轨道值（含 grid 头 [列数, 行数, dx0, dy0, …]）。 */
-type AttachmentDraft = { tx: number; ty: number; rz: number; sx: number; sy: number; bend: number; warp?: number[] };
+/** 部件偏移草稿：tx/ty 为 rest 后局部像素，rz 为角度制，sx/sy 为缩放倍率，bend 为 deform 弯曲增量，warp 为自描述轨道值（含 grid 头 [列数, 行数, dx0, dy0, …]），skew 为 X/Y 轴错切角（角度制）。 */
+type AttachmentDraft = { tx: number; ty: number; rz: number; sx: number; sy: number; bend: number; warp?: number[]; skew?: [number, number] };
 
 const offsetToAttachmentDraft = (offset?: AttachmentOffset): AttachmentDraft => ({
   tx: offset?.translation?.[0] ?? 0,
@@ -929,7 +923,20 @@ const offsetToAttachmentDraft = (offset?: AttachmentOffset): AttachmentDraft => 
   bend: offset?.deformBend ?? 0,
   // deformWarp.grid 可能是 lerp 出的小数，还原轨道值时取整
   ...(offset?.deformWarp ? { warp: [Math.round(offset.deformWarp.grid[0]), Math.round(offset.deformWarp.grid[1]), ...offset.deformWarp.points] } : {}),
+  ...(offset?.skew ? { skew: [offset.skew[0] * 180 / Math.PI, offset.skew[1] * 180 / Math.PI] as [number, number] } : {}),
 });
+
+/** 把部件偏移草稿写成 att: 轨道关键帧；warp/skew 仅在草稿持有时写入，避免给每个部件都生成空轨道。 */
+function upsertAttachmentDraft(clip: MotionClip, attachmentId: string, time: number, partDraft: AttachmentDraft): MotionClip {
+  const targetId = `${ATTACHMENT_TARGET_PREFIX}${attachmentId}`;
+  let next = upsertMotionKeyframe(clip, targetId, "translation", time, [partDraft.tx, partDraft.ty, 0]);
+  next = upsertMotionKeyframe(next, targetId, "rotation", time, quaternionFromZRotation(partDraft.rz * Math.PI / 180));
+  next = upsertMotionKeyframe(next, targetId, "scale", time, [partDraft.sx, partDraft.sy, 1]);
+  next = upsertMotionKeyframe(next, targetId, "deform", time, [partDraft.bend, 0, 0]);
+  if (partDraft.warp) next = upsertMotionKeyframe(next, targetId, "warp", time, partDraft.warp);
+  if (partDraft.skew) next = upsertMotionKeyframe(next, targetId, "skew", time, [partDraft.skew[0] * Math.PI / 180, partDraft.skew[1] * Math.PI / 180, 0]);
+  return next;
+}
 
 /** 草稿字段有限性检查：数组字段（warp）逐项判断，缺省（undefined）视为有效。 */
 const finiteDraftValue = (value: number | number[] | undefined) => value === undefined || (Array.isArray(value) ? value.every(Number.isFinite) : Number.isFinite(value));
@@ -1000,12 +1007,7 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
     // 部件偏移草稿临时写入 att: 轨道做所见即所得（未保存，不落库）
     for (const [attachmentId, partDraft] of Object.entries({ ...stagedAttachmentDrafts, ...(selectedAttachmentId ? { [selectedAttachmentId]: attachmentDraft } : {}) })) {
       if (!Object.values(partDraft).every(finiteDraftValue)) continue;
-      const targetId = `${ATTACHMENT_TARGET_PREFIX}${attachmentId}`;
-      next = upsertMotionKeyframe(next, targetId, "translation", time, [partDraft.tx, partDraft.ty, 0]);
-      next = upsertMotionKeyframe(next, targetId, "rotation", time, quaternionFromZRotation(partDraft.rz * Math.PI / 180));
-      next = upsertMotionKeyframe(next, targetId, "scale", time, [partDraft.sx, partDraft.sy, 1]);
-      next = upsertMotionKeyframe(next, targetId, "deform", time, [partDraft.bend, 0, 0]);
-      if (partDraft.warp) next = upsertMotionKeyframe(next, targetId, "warp", time, partDraft.warp);
+      next = upsertAttachmentDraft(next, attachmentId, time, partDraft);
     }
     return next;
   }, [clip, playing, selectedBone, sampledPose, stagedDrafts, stagedAttachmentDrafts, selectedAttachmentId, attachmentDraft, time, draft]);
@@ -1022,8 +1024,9 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
   const attachmentDraftDirty = !playing && !!sampledPose && Object.entries({ ...stagedAttachmentDrafts, ...(selectedAttachmentId ? { [selectedAttachmentId]: attachmentDraft } : {}) }).some(([attachmentId, partDraft]) => {
     const base = offsetToAttachmentDraft(sampledPose.attachmentOffsets[attachmentId]);
     const warpDirty = (partDraft.warp?.length ?? 0) !== (base.warp?.length ?? 0) || !!partDraft.warp?.some((value, index) => Math.abs(value - base.warp![index]!) > 1e-6);
+    const skewDirty = [0, 1].some((index) => Math.abs((partDraft.skew?.[index] ?? 0) - (base.skew?.[index] ?? 0)) > 1e-6);
     return Math.abs(partDraft.tx - base.tx) > 1e-6 || Math.abs(partDraft.ty - base.ty) > 1e-6 || Math.abs(partDraft.rz - base.rz) > 1e-6
-      || Math.abs(partDraft.sx - base.sx) > 1e-6 || Math.abs(partDraft.sy - base.sy) > 1e-6 || Math.abs(partDraft.bend - base.bend) > 1e-6 || warpDirty;
+      || Math.abs(partDraft.sx - base.sx) > 1e-6 || Math.abs(partDraft.sy - base.sy) > 1e-6 || Math.abs(partDraft.bend - base.bend) > 1e-6 || warpDirty || skewDirty;
   });
   useEffect(() => {
     if (!clip || !skeleton || !selectedBone) return;
@@ -1147,12 +1150,7 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
       let next = clip;
       for (const [attachmentId, partDraft] of Object.entries({ ...stagedAttachmentDrafts, [selectedAttachmentId]: attachmentDraft })) {
         if (!Object.values(partDraft).every(finiteDraftValue)) return;
-        const targetId = `${ATTACHMENT_TARGET_PREFIX}${attachmentId}`;
-        next = upsertMotionKeyframe(next, targetId, "translation", time, [partDraft.tx, partDraft.ty, 0]);
-        next = upsertMotionKeyframe(next, targetId, "rotation", time, quaternionFromZRotation(partDraft.rz * Math.PI / 180));
-        next = upsertMotionKeyframe(next, targetId, "scale", time, [partDraft.sx, partDraft.sy, 1]);
-        next = upsertMotionKeyframe(next, targetId, "deform", time, [partDraft.bend, 0, 0]);
-        if (partDraft.warp) next = upsertMotionKeyframe(next, targetId, "warp", time, partDraft.warp);
+        next = upsertAttachmentDraft(next, attachmentId, time, partDraft);
       }
       if (await commitClipEdit(next)) setStagedAttachmentDrafts({});
       return;
@@ -1172,7 +1170,7 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
   const deleteKey = async () => {
     if (!clip || busy) return;
     if (previewBinding && selectedAttachmentId) {
-      const next = deleteMotionKeyframe(clip, `${ATTACHMENT_TARGET_PREFIX}${selectedAttachmentId}`, ["translation", "rotation", "scale", "deform", "warp"], time);
+      const next = deleteMotionKeyframe(clip, `${ATTACHMENT_TARGET_PREFIX}${selectedAttachmentId}`, ["translation", "rotation", "scale", "deform", "warp", "skew"], time);
       if (next === clip) return;
       await commitClipEdit(next);
       return;
@@ -1287,6 +1285,7 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
   const selectedAttachmentInfo = previewBinding?.attachments.find((item) => item.id === selectedAttachmentId);
   const isRootBone = selectedBoneInfo?.parentId === null;
   const numberField = (key: keyof typeof draft, label: string, step = .01) => <label>{label}<input className="px-input" type="number" step={step} value={draft[key]} disabled={busy || builtin} onChange={(event) => { setPlaying(false); setDraft((old) => ({ ...old, [key]: +event.target.value })); }} /></label>;
+  const partSkewField = (index: 0 | 1, label: string) => <label>{label}<input className="px-input" type="number" min="-89" max="89" step="1" value={attachmentDraft.skew?.[index] ?? 0} disabled={busy || builtin} onChange={(event) => { setPlaying(false); const value = Math.max(-89, Math.min(89, +event.target.value)); setAttachmentDraft((old) => { const skew: [number, number] = [...(old.skew ?? [0, 0])]; skew[index] = value; return { ...old, skew }; }); }} /></label>;
   const partNumberField = (key: "tx" | "ty" | "sx" | "sy", label: string, step = .01) => <label>{label}<input className="px-input" type="number" step={step} value={attachmentDraft[key]} disabled={busy || builtin} onChange={(event) => { setPlaying(false); setAttachmentDraft((old) => ({ ...old, [key]: +event.target.value })); }} /></label>;
   const selectBone = (id: string) => {
     setPlaying(false);
@@ -1436,6 +1435,7 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
             <p className="animation-bone-hint">{t("animation.partHint")}</p>
             <div className="animation-root-fields">{partNumberField("tx", t("animation.partOffsetX"))}{partNumberField("ty", t("animation.partOffsetY"))}</div>
             <div className="animation-root-fields">{partNumberField("sx", t("animation.partScaleX"))}{partNumberField("sy", t("animation.partScaleY"))}</div>
+            <div className="animation-root-fields">{partSkewField(0, t("animation.partSkewX"))}{partSkewField(1, t("animation.partSkewY"))}</div>
             <div className="animation-rotation-editor">
               <label>{t("animation.partRotation")}<input type="range" min="-180" max="180" step="1" value={attachmentDraft.rz} disabled={busy || builtin} onChange={(event) => { setPlaying(false); setAttachmentDraft((old) => ({ ...old, rz: +event.target.value })); }} /></label>
               <input className="px-input" type="number" min="-180" max="180" step="1" value={attachmentDraft.rz} disabled={busy || builtin} aria-label={t("animation.partRotation")} onChange={(event) => { setPlaying(false); setAttachmentDraft((old) => ({ ...old, rz: +event.target.value })); }} />

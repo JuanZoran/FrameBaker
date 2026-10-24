@@ -138,7 +138,13 @@ export interface WarpTrack extends MotionTrackV1Base {
   keyframes: Array<MotionKey<number[]>>;
 }
 
-export type MotionTrack = TranslationTrack | RotationTrack | ScaleTrack | DeformTrack | WarpTrack;
+/** 部件错切通道（仅 att: 目标合法）；value 为 Vec3：x 为 X 轴错切角、y 为 Y 轴错切角（弧度，y 向上坐标中逆时针为正），z 保留为 0。 */
+export interface SkewTrack extends MotionTrackV1Base {
+  property: "skew";
+  keyframes: Array<MotionKey<Vec3>>;
+}
+
+export type MotionTrack = TranslationTrack | RotationTrack | ScaleTrack | DeformTrack | WarpTrack | SkewTrack;
 
 interface MotionTrackV2Base { targetId: string }
 export interface TranslationTrackV2 extends MotionTrackV2Base { property: "translation"; keyframes: Array<MotionKeyV2<Vec3>> }
@@ -146,7 +152,8 @@ export interface RotationTrackV2 extends MotionTrackV2Base { property: "rotation
 export interface ScaleTrackV2 extends MotionTrackV2Base { property: "scale"; keyframes: Array<MotionKeyV2<Vec3>> }
 export interface DeformTrackV2 extends MotionTrackV2Base { property: "deform"; keyframes: Array<MotionKeyV2<Vec3>> }
 export interface WarpTrackV2 extends MotionTrackV2Base { property: "warp"; keyframes: Array<MotionKeyV2<number[]>> }
-export type MotionTrackV2 = TranslationTrackV2 | RotationTrackV2 | ScaleTrackV2 | DeformTrackV2 | WarpTrackV2;
+export interface SkewTrackV2 extends MotionTrackV2Base { property: "skew"; keyframes: Array<MotionKeyV2<Vec3>> }
+export type MotionTrackV2 = TranslationTrackV2 | RotationTrackV2 | ScaleTrackV2 | DeformTrackV2 | WarpTrackV2 | SkewTrackV2;
 export type AnyMotionTrack = MotionTrack | MotionTrackV2;
 
 export interface MotionEvent {
@@ -295,6 +302,8 @@ export interface AttachmentOffset {
   deformBend?: number;
   /** warp 轨道采样出的自由变形增量（delta）；有效 warp = 静态 warp + 轨道 delta，仅当两侧 grid 相同才叠加，否则以轨道为准；全零视为无 warp。 */
   deformWarp?: RegionAttachmentWarp;
+  /** skew 轨道采样值：[X 轴错切角, Y 轴错切角, 0]（弧度），在旋转与缩放之间作用，见 attachmentOffsetMatrix。 */
+  skew?: Vec3;
 }
 
 export interface EvaluatedPose {
@@ -479,8 +488,8 @@ function validateTrack(track: unknown, index: number, duration: number, skeleton
   rejectUnknown(track, version === 1 ? ["targetId", "property", "interpolation", "keyframes"] : ["targetId", "property", "keyframes"], path, issues);
   if (typeof track.targetId !== "string" || !ID_PATTERN.test(track.targetId)) issues.push({ path: `${path}.targetId`, message: "目标 ID 无效" });
   else if (skeletonIds && !skeletonIds.has(track.targetId) && !isAttachmentTargetId(track.targetId)) issues.push({ path: `${path}.targetId`, message: "目标骨骼不存在" });
-  if (track.property !== "translation" && track.property !== "rotation" && track.property !== "scale" && track.property !== "deform" && track.property !== "warp") issues.push({ path: `${path}.property`, message: "轨道属性无效" });
-  else if ((track.property === "deform" || track.property === "warp") && !(typeof track.targetId === "string" && isAttachmentTargetId(track.targetId))) issues.push({ path: `${path}.property`, message: `${track.property} 轨道仅支持部件（att:）目标` });
+  if (track.property !== "translation" && track.property !== "rotation" && track.property !== "scale" && track.property !== "deform" && track.property !== "warp" && track.property !== "skew") issues.push({ path: `${path}.property`, message: "轨道属性无效" });
+  else if ((track.property === "deform" || track.property === "warp" || track.property === "skew") && !(typeof track.targetId === "string" && isAttachmentTargetId(track.targetId))) issues.push({ path: `${path}.property`, message: `${track.property} 轨道仅支持部件（att:）目标` });
   if (version === 1 && track.interpolation !== "step" && track.interpolation !== "linear") issues.push({ path: `${path}.interpolation`, message: "插值方式无效" });
   if (!Array.isArray(track.keyframes) || track.keyframes.length === 0 || track.keyframes.length > ANIMATION_V1_LIMITS.maxKeyframesPerTrack) {
     issues.push({ path: `${path}.keyframes`, message: "轨道至少需要一个关键帧" });
@@ -519,6 +528,7 @@ function validateTrack(track: unknown, index: number, duration: number, skeleton
       const expected = track.property === "rotation" ? 4 : 3;
       if (!isTuple(key.value, expected)) issues.push({ path: `${keyPath}.value`, message: `必须包含 ${expected} 个有限数值` });
       else if (track.property === "rotation" && Math.abs(Math.hypot(...key.value) - 1) > QUATERNION_NORM_EPSILON) issues.push({ path: `${keyPath}.value`, message: "四元数必须归一化" });
+      else if (track.property === "skew" && (key.value.some((item) => Math.abs(item) > Math.PI) || key.value[2] !== 0)) issues.push({ path: `${keyPath}.value`, message: "skew 必须是 [-π, π] 内的弧度且 z 为 0" });
     }
     if (version === 2) {
       const terminal = keyIndex === track.keyframes.length - 1;
@@ -980,6 +990,24 @@ export function transformToMatrix(transform: Transform): Mat4 {
   ];
 }
 
+/**
+ * 部件偏移（att: 轨道采样值）的叠加矩阵 T × R × K × S；无平移/旋转/缩放/错切时返回 undefined。
+ * K 为错切：局部 X 轴旋转 skew[0]、局部 Y 轴旋转 skew[1]（y 向上坐标中逆时针为正），
+ * 两角相等时等价于额外旋转，因此可无损表达 Flash/Animate 风格的 kx/ky 仿射。
+ */
+export function attachmentOffsetMatrix(offset: AttachmentOffset | undefined): Mat4 | undefined {
+  if (!offset || (!offset.translation && !offset.rotation && !offset.scale && !offset.skew)) return undefined;
+  const base = transformToMatrix({ translation: offset.translation ?? [0, 0, 0], rotation: offset.rotation ?? [0, 0, 0, 1], scale: [1, 1, 1] });
+  const [sx, sy, sz] = offset.scale ?? [1, 1, 1], [ax, ay] = offset.skew ?? [0, 0, 0];
+  const skewScale: Mat4 = [
+    Math.cos(ax) * sx, Math.sin(ax) * sx, 0, 0,
+    -Math.sin(ay) * sy, Math.cos(ay) * sy, 0, 0,
+    0, 0, sz, 0,
+    0, 0, 0, 1,
+  ];
+  return multiplyMatrices(base, skewScale);
+}
+
 export function multiplyMatrices(a: Mat4, b: Mat4): Mat4 {
   const result = new Array<number>(16);
   for (let column = 0; column < 4; column += 1) {
@@ -1040,6 +1068,7 @@ export function sampleMotionClip(clip: MotionClip, skeleton: Skeleton, requested
       if (track.property === "rotation") entry.rotation = normalizeQuaternion(value as Quaternion);
       else if (track.property === "translation") entry.translation = value as Vec3;
       else if (track.property === "scale") entry.scale = value as Vec3;
+      else if (track.property === "skew") entry.skew = value as Vec3;
       else if (track.property === "warp") {
         const warpValue = value as number[];
         entry.deformWarp = { grid: [warpValue[0]!, warpValue[1]!], points: warpValue.slice(2) };

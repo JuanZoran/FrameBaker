@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 部件偏移轨道新增仅限 `att:` 目标的 `skew` 属性（`[X 轴错切角, Y 轴错切角, 0]`，弧度），由共享的 `attachmentOffsetMatrix` 按 T×R×K×S 组合，Flash/Animate 风格的 kx/ky 仿射无需再借助仿射 warp 模拟即可往返；动作编辑器提供错切 X/Y 数值框。
+
 ### 修复
 
 - ZIP 导入改为并发消费解压输出，修复较大动画文件因流背压而卡住的问题。

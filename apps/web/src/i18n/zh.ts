@@ -102,6 +102,7 @@ export const zh = {
   "animation.partHint": "部件偏移叠加在绑定静止位形之上，只影响当前动作；点击画布中的部件选中，拖动平移、拖动圆柄旋转。",
   "animation.partOffsetX": "偏移 X", "animation.partOffsetY": "偏移 Y",
   "animation.partScaleX": "偏移缩放 X", "animation.partScaleY": "偏移缩放 Y",
+  "animation.partSkewX": "错切 X（度）", "animation.partSkewY": "错切 Y（度）", "animation.channel.skew": "错切",
   "animation.partRotation": "偏移旋转（度）",
   "animation.partBend": "弯曲（bend）",
   "animation.partBendHint": "弯曲叠加在绑定静态弯曲之上；方向与摆动沿用绑定的变形设置，未开启变形的部件按纵向轴渲染。",
