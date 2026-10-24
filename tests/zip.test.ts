@@ -36,6 +36,12 @@ async function readZipEntries(blob: Blob): Promise<Map<string, Uint8Array>> {
 }
 
 describe("ZIP 导出", () => {
+  test("并发消费大文件解压输出，避免流背压卡住读取", async () => {
+    const data=Uint8Array.from({length:250_000},(_,i)=>i%251);
+    const zip=await createZip([{name:"manifest.json",data:new TextEncoder().encode("{}")},{name:"motions/large.json",data}]);
+    const entries=await readZip(zip);
+    expect(entries[1]!.data).toEqual(data);
+  }, 5000);
   test("生成可解压的 ZIP，并保持 ASCII、Unicode 与空文件内容", async () => {
     const encoder = new TextEncoder();
     const zip = await createZip([

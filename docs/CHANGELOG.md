@@ -4,6 +4,10 @@ This document records features, changes, and bug fixes by release. Main releases
 
 ## [Unreleased]
 
+### Fixed
+
+- Read large ZIP entries while decompression is producing output, avoiding a stream backpressure stall when importing animation packages.
+
 ## [0.5.0] - 2026-09-02
 
 ### Added

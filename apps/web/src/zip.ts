@@ -73,11 +73,10 @@ export async function readZip(blob: Blob): Promise<ZipEntry[]> {
     let data: Uint8Array;
     if (method === 0) data = compressed;
     else if (method === 8) {
-      const stream = new DecompressionStream("deflate-raw");
-      const writer = stream.writable.getWriter();
-      await writer.write(compressed);
-      await writer.close();
-      const chunks: Uint8Array[] = [], reader = stream.readable.getReader();
+      // 边输入边消费输出，避免大文件的可读端背压阻塞 writer.close()。
+      const reader = new Blob([compressed]).stream()
+        .pipeThrough(new DecompressionStream("deflate-raw")).getReader();
+      const chunks: Uint8Array[] = [];
       let outputBytes = 0;
       for (;;) { const item = await reader.read(); if (item.done) break; if (item.value) { outputBytes += item.value.length; if (outputBytes > maxOutput) throw new Error("ZIP 解压后单文件过大"); chunks.push(item.value); } }
       data = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length, 0));
