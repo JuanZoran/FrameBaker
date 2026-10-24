@@ -154,6 +154,8 @@ export const en = {
   "animation.partHint": "Part offsets stack on top of the bound rest pose and only affect this clip. Click a part on the canvas to select it; drag to move, drag the round handle to rotate.",
   "animation.partOffsetX": "Offset X", "animation.partOffsetY": "Offset Y",
   "animation.partScaleX": "Offset scale X", "animation.partScaleY": "Offset scale Y",
+  "animation.slotShown": "Slot shows", "animation.slotHidden": "(hidden)", "animation.slotShownHint": "Slot {name}: writes a hold key at the playhead that swaps to the chosen image or hides until the next key.",
+  "animation.channel.attachment": "Image",
   "animation.partSkewX": "Skew X (deg)", "animation.partSkewY": "Skew Y (deg)", "animation.channel.skew": "Skew",
   "animation.partRotation": "Offset rotation (deg)",
   "animation.partBend": "Bend",

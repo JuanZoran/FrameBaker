@@ -7,6 +7,7 @@ This document records features, changes, and bug fixes by release. Main releases
 ### Added
 
 - Attachment offset tracks gain an `att:`-only `skew` property (`[skewX, skewY, 0]` radians) composed as T×R×K×S by the shared `attachmentOffsetMatrix`, so Flash/Animate-style kx/ky affines round-trip without affine warp workarounds; the motion editor exposes Skew X/Y fields.
+- Motion clips gain step-only `slot:<slotId>` `attachment` tracks for per-frame image swaps and hiding (`null`); the preview resolves the shown attachment per slot, the part inspector writes slot keys, and `.fbanim` v2 build/verify check slot and attachment references.
 
 ### Fixed
 

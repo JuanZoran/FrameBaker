@@ -7,6 +7,7 @@
 ### 新增
 
 - 部件偏移轨道新增仅限 `att:` 目标的 `skew` 属性（`[X 轴错切角, Y 轴错切角, 0]`，弧度），由共享的 `attachmentOffsetMatrix` 按 T×R×K×S 组合，Flash/Animate 风格的 kx/ky 仿射无需再借助仿射 warp 模拟即可往返；动作编辑器提供错切 X/Y 数值框。
+- 动作新增仅 step 的 `slot:<slotId>` `attachment` 轨道，支持逐帧换图与隐藏（`null`）；预览按插槽解析当前显示的附件，部件检查器可写入插槽关键帧，`.fbanim` v2 打包与校验会检查插槽和附件引用。
 
 ### 修复
 

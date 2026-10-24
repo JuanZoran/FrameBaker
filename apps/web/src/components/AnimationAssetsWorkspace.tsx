@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { addMotionEvent, attachmentOffsetMatrix, ATTACHMENT_TARGET_PREFIX, BUILTIN_ANIMATION_ASSET_IDS, closeMotionLoopSeam, DEFAULT_CUBIC_MOTION_INTERPOLATION, deleteMotionEvent, deleteMotionKeyframe, findMotionSegmentIndex, getBoneEndpoint, isAttachmentTargetId, isBuiltinAnimationAssetId, MOTION_KEY_TIME_EPSILON, multiplyMatrices, quaternionFromZRotation, reparentTransform2d, sampleMotionClip, setMotionSegmentInterpolation, transformPoint, transformToMatrix, upsertMotionKeyframe, zRotationFromQuaternion, type AnimationAsset, type AnimationAssetSummary, type AnyMotionTrack, type AttachmentOffset, type CharacterBinding, type CubicBezierMotionInterpolation, type JsonValue, type Mat4, type Material, type MotionClip, type MotionSegmentInterpolation, type MotionTrack, type MotionTrackV2, type RegionAttachmentWarp, type RootMotionPolicy, type Skeleton } from "@framebaker/shared";
+import { addMotionEvent, attachmentOffsetMatrix, resolveSlotAttachmentId, upsertSlotAttachmentKeyframe, SLOT_TARGET_PREFIX, isSlotTargetId, ATTACHMENT_TARGET_PREFIX, BUILTIN_ANIMATION_ASSET_IDS, closeMotionLoopSeam, DEFAULT_CUBIC_MOTION_INTERPOLATION, deleteMotionEvent, deleteMotionKeyframe, findMotionSegmentIndex, getBoneEndpoint, isAttachmentTargetId, isBuiltinAnimationAssetId, MOTION_KEY_TIME_EPSILON, multiplyMatrices, quaternionFromZRotation, reparentTransform2d, sampleMotionClip, setMotionSegmentInterpolation, transformPoint, transformToMatrix, upsertMotionKeyframe, zRotationFromQuaternion, type AnimationAsset, type AnimationAssetSummary, type AnyMotionTrack, type AttachmentOffset, type CharacterBinding, type CubicBezierMotionInterpolation, type JsonValue, type Mat4, type Material, type MotionClip, type MotionSegmentInterpolation, type MotionTrack, type MotionTrackV2, type RegionAttachmentWarp, type RootMotionPolicy, type Skeleton } from "@framebaker/shared";
 import { ChevronDown, ChevronRight, Copy, Crosshair, Lock, Move, Pause, Pencil, Play, Plus, Redo2, RotateCcw, RotateCw, Save, Trash2, Undo2, Upload, Waves, ZoomIn } from "lucide-react";
 import { api, materialImageUrl, wsClient, type Folder } from "../api";
 import { attachmentLocalBounds, attachmentLocalCorners, attachmentSvgImageY, fitAttachmentSizeToImage } from "../bindingGeometry";
@@ -326,9 +326,10 @@ export function CharacterPreview({ binding, skeleton, clip, time, selectedAttach
   }), []);
   // 有效 warp 非零的部件请求 warp 贴图（worker 光栅，pending 保留上一帧防闪烁）；全零不请求
   const warpRequests = useMemo(() => binding.slots.flatMap((slot) => {
-    const attachment = binding.attachments.find((item) => item.id === slot.attachmentId);
+    const attachmentId = resolveSlotAttachmentId(slot, pose);
+    const attachment = binding.attachments.find((item) => item.id === attachmentId);
     if (!attachment) return [];
-    const warp = effectiveWarp(attachment, pose.attachmentOffsets[slot.attachmentId]);
+    const warp = effectiveWarp(attachment, pose.attachmentOffsets[attachment.id]);
     return warp ? [{ id: attachment.id, url: materialImageUrl(attachment.materialId, materialV[attachment.materialId], attachment.imageSlot), grid: warp.grid, points: warp.points }] : [];
   }), [binding, materialV, pose]);
   const warpedUrls = useWarpedAttachments(warpRequests);
@@ -342,16 +343,17 @@ export function CharacterPreview({ binding, skeleton, clip, time, selectedAttach
     const points = times.flatMap((sampleTime) => {
       const sampled = sampleMotionClip(previewClip, skeleton, sampleTime, binding.boneRotationOffsets);
       const attachmentPoints = binding.slots.flatMap((slot) => {
-        const attachment = binding.attachments.find((item) => item.id === slot.attachmentId), bone = sampled.worldMatrices[slot.boneId];
+        const attachmentId = resolveSlotAttachmentId(slot, sampled);
+        const attachment = binding.attachments.find((item) => item.id === attachmentId), bone = sampled.worldMatrices[slot.boneId];
         if (!attachment || !bone) return [];
         const restWorld = multiplyMatrices(bone, transformToMatrix(attachment.rest));
-        const offset = attachmentOffsetMatrix(sampled.attachmentOffsets[slot.attachmentId]);
+        const offset = attachmentOffsetMatrix(sampled.attachmentOffsets[attachment.id]);
         const world = offset ? multiplyMatrices(restWorld, offset) : restWorld;
         const deform = attachment.deform ?? DEFAULT_ATTACHMENT_DEFORM;
-        const bend = effectiveDeformBend(attachment, sampled.attachmentOffsets[slot.attachmentId]);
+        const bend = effectiveDeformBend(attachment, sampled.attachmentOffsets[attachment.id]);
         const bendExtent = bend !== undefined ? Math.min(1, Math.abs(bend) + Math.abs(deform.sway)) * Math.max(...attachment.size) / 2 : 0;
         // warp 节点最大位移（归一化 × 部件尺寸）也并入画布估算
-        const warp = effectiveWarp(attachment, sampled.attachmentOffsets[slot.attachmentId]);
+        const warp = effectiveWarp(attachment, sampled.attachmentOffsets[attachment.id]);
         const warpX = warp ? Math.max(0, ...warp.points.filter((_, index) => index % 2 === 0).map(Math.abs)) * attachment.size[0] : 0;
         const warpY = warp ? Math.max(0, ...warp.points.filter((_, index) => index % 2 === 1).map(Math.abs)) * attachment.size[1] : 0;
         const extentX = (deform.axis === "horizontal" ? 0 : bendExtent) + warpX;
@@ -526,7 +528,7 @@ export function CharacterPreview({ binding, skeleton, clip, time, selectedAttach
   const previewSpan = Math.max(...viewBox.split(" ").slice(2).map(Number));
   const boneNodeRadius = Math.max(previewSpan * .008, .05);
   const handleRadius = Math.max(previewSpan * .01, .055);
-  const selectedSlot = binding.slots.find((slot) => slot.attachmentId === selectedAttachmentId);
+  const selectedSlot = binding.slots.find((slot) => resolveSlotAttachmentId(slot, pose) === selectedAttachmentId) ?? binding.slots.find((slot) => slot.attachmentId === selectedAttachmentId);
   const selectedAttachment = binding.attachments.find((attachment) => attachment.id === selectedAttachmentId);
   const selectedBoneMatrix = selectedSlot ? pose.worldMatrices[selectedSlot.boneId] : undefined;
   const selectedWorld = selectedAttachment && selectedBoneMatrix ? (() => {
@@ -571,11 +573,12 @@ export function CharacterPreview({ binding, skeleton, clip, time, selectedAttach
       return <filter id={`${filterPrefix}-warp-${attachment.id}`} key={attachment.id} x="-100%" y="-100%" width="300%" height="300%" colorInterpolationFilters="sRGB"><feImage href={WARP_MAPS[deform.axis]} preserveAspectRatio="none" result="warp-map" /><feDisplacementMap in="SourceGraphic" in2="warp-map" scale={amount * Math.max(...attachment.size)} xChannelSelector="R" yChannelSelector="G" /></filter>;
     })}</defs>
     <g transform="scale(1 -1)">{[...binding.slots].sort((a, b) => a.drawOrder - b.drawOrder).map((slot) => {
-      const attachment = binding.attachments.find((item) => item.id === slot.attachmentId), matrix = pose.worldMatrices[slot.boneId];
+      const attachmentId = resolveSlotAttachmentId(slot, pose);
+      const attachment = binding.attachments.find((item) => item.id === attachmentId), matrix = pose.worldMatrices[slot.boneId];
       if (!attachment || !matrix) return null;
-      const restWorld = multiplyMatrices(matrix, transformToMatrix(attachment.rest)), offset = attachmentOffsetMatrix(pose.attachmentOffsets[slot.attachmentId]);
+      const restWorld = multiplyMatrices(matrix, transformToMatrix(attachment.rest)), offset = attachmentOffsetMatrix(pose.attachmentOffsets[attachment.id]);
       const world = offset ? multiplyMatrices(restWorld, offset) : restWorld, [w, h] = attachment.size, [px] = attachment.pivot;
-      const deformed = effectiveDeformBend(attachment, pose.attachmentOffsets[slot.attachmentId]) !== undefined;
+      const deformed = effectiveDeformBend(attachment, pose.attachmentOffsets[attachment.id]) !== undefined;
       // 合成顺序：先 warp 位图（warpedUrls 替换 href），后 bend 的 feDisplacementMap filter
       return <g key={slot.id}>
         <image className={`${selectedAttachmentId === attachment.id ? "selected" : ""}${deformed ? " deformed" : ""}`} href={warpedUrls[attachment.id] ?? materialImageUrl(attachment.materialId, materialV[attachment.materialId], attachment.imageSlot)} x={-px * w} y={attachmentSvgImageY(attachment.size, attachment.pivot)} width={w} height={h} preserveAspectRatio="none" filter={deformed ? `url(#${filterPrefix}-warp-${attachment.id})` : undefined} transform={`matrix(${world[0]} ${world[1]} ${world[4]} ${world[5]} ${world[12]} ${world[13]}) scale(1 -1)`} onPointerDown={canTransform && selectedAttachmentId === attachment.id ? (event) => beginTransform(event, attachment, matrix, world) : undefined} onClick={onSelectAttachment ? () => onSelectAttachment(attachment.id) : undefined} />
@@ -991,7 +994,8 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
     return bone && skeleton ? localizeBoneName(skeleton.id, bone.id, bone.name, t) : t("animation.unknownBone");
   };
   const attachmentLabelById = (attachmentId: string) => previewBinding?.attachments.find((item) => item.id === attachmentId)?.name ?? attachmentId;
-  const trackTargetLabel = (targetId: string) => isAttachmentTargetId(targetId) ? attachmentLabelById(targetId.slice(ATTACHMENT_TARGET_PREFIX.length)) : boneLabelById(targetId);
+  const slotLabelById = (slotId: string) => previewBinding?.slots.find((item) => item.id === slotId)?.name ?? slotId;
+  const trackTargetLabel = (targetId: string) => isAttachmentTargetId(targetId) ? attachmentLabelById(targetId.slice(ATTACHMENT_TARGET_PREFIX.length)) : isSlotTargetId(targetId) ? slotLabelById(targetId.slice(SLOT_TARGET_PREFIX.length)) : boneLabelById(targetId);
   const sampledPose = useMemo(() => clip && skeleton ? sampleMotionClip(clip, skeleton, time) : undefined, [clip, skeleton, time]);
   const sampledSelectedTransform = selectedBone ? sampledPose?.local[selectedBone] : undefined;
   const previewClip = useMemo(() => {
@@ -1265,12 +1269,13 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
   const smoothAllTracks = async () => {
     if (!clip || busy) return;
     if (clip.schemaVersion === 1) {
-      if (!clip.tracks.some((track) => track.interpolation === "step")) return;
-      await commitClipEdit({ ...clip, tracks: clip.tracks.map((track) => ({ ...track, interpolation: "linear" })) });
+      // 插槽附件轨道是离散换图，保持 step。
+      if (!clip.tracks.some((track) => track.property !== "attachment" && track.interpolation === "step")) return;
+      await commitClipEdit({ ...clip, tracks: clip.tracks.map((track) => track.property === "attachment" ? track : { ...track, interpolation: "linear" }) } as MotionClip);
       return;
     }
-    if (!clip.tracks.some((track) => track.keyframes.some((key) => key.outInterpolation?.type === "step"))) return;
-    await commitClipEdit({ ...clip, tracks: clip.tracks.map((track) => ({ ...track, keyframes: track.keyframes.map((key) => key.outInterpolation?.type === "step" ? { ...key, outInterpolation: { type: "linear" as const } } : key) })) } as MotionClip);
+    if (!clip.tracks.some((track) => track.property !== "attachment" && track.keyframes.some((key) => key.outInterpolation?.type === "step"))) return;
+    await commitClipEdit({ ...clip, tracks: clip.tracks.map((track) => track.property === "attachment" ? track : ({ ...track, keyframes: track.keyframes.map((key) => key.outInterpolation?.type === "step" ? { ...key, outInterpolation: { type: "linear" as const } } : key) })) } as MotionClip);
   };
   const setRootMotion = async (value: string) => {
     if (!clip || busy) return;
@@ -1283,6 +1288,14 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
   const hasCurrentKey = !!clip?.tracks.some((track) => track.targetId === selectedTrackTargetId && track.keyframes.some((key) => Math.abs(key.time - time) <= MOTION_KEY_TIME_EPSILON));
   const selectedBoneInfo = skeleton?.bones.find((bone) => bone.id === selectedBone);
   const selectedAttachmentInfo = previewBinding?.attachments.find((item) => item.id === selectedAttachmentId);
+  // 选中部件所在插槽：优先当前时刻正在显示它的插槽，其次是以它为默认附件的插槽。
+  const selectedPartSlot = previewBinding && selectedAttachmentId ? previewBinding.slots.find((slot) => resolveSlotAttachmentId(slot, sampledPose) === selectedAttachmentId) ?? previewBinding.slots.find((slot) => slot.attachmentId === selectedAttachmentId) : undefined;
+  const selectedSlotShown = selectedPartSlot ? resolveSlotAttachmentId(selectedPartSlot, sampledPose) : undefined;
+  const setSlotAttachmentKey = async (attachmentId: string | null) => {
+    if (!clip || !selectedPartSlot || busy || builtin) return;
+    setPlaying(false);
+    await commitClipEdit(upsertSlotAttachmentKeyframe(clip, selectedPartSlot.id, time, attachmentId));
+  };
   const isRootBone = selectedBoneInfo?.parentId === null;
   const numberField = (key: keyof typeof draft, label: string, step = .01) => <label>{label}<input className="px-input" type="number" step={step} value={draft[key]} disabled={busy || builtin} onChange={(event) => { setPlaying(false); setDraft((old) => ({ ...old, [key]: +event.target.value })); }} /></label>;
   const partSkewField = (index: 0 | 1, label: string) => <label>{label}<input className="px-input" type="number" min="-89" max="89" step="1" value={attachmentDraft.skew?.[index] ?? 0} disabled={busy || builtin} onChange={(event) => { setPlaying(false); const value = Math.max(-89, Math.min(89, +event.target.value)); setAttachmentDraft((old) => { const skew: [number, number] = [...(old.skew ?? [0, 0])]; skew[index] = value; return { ...old, skew }; }); }} /></label>;
@@ -1351,24 +1364,32 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
   const nudgeRotation = (degrees: number) => { if (builtin) return; setPlaying(false); setDraft((old) => ({ ...old, rz: Math.max(-180, Math.min(180, old.rz + degrees)) })); };
   const selectTrackTarget = (targetId: string) => {
     if (isAttachmentTargetId(targetId)) selectAttachment(targetId.slice(ATTACHMENT_TARGET_PREFIX.length));
+    else if (isSlotTargetId(targetId)) {
+      const slot = previewBinding?.slots.find((item) => item.id === targetId.slice(SLOT_TARGET_PREFIX.length));
+      if (slot) selectAttachment(resolveSlotAttachmentId(slot, sampledPose) ?? slot.attachmentId);
+    }
     else selectBone(targetId);
   };
-  const boneTracks = clip?.tracks.filter((track) => !isAttachmentTargetId(track.targetId)) ?? [];
-  const partTracks = clip?.tracks.filter((track) => isAttachmentTargetId(track.targetId)) ?? [];
+  const boneTracks = clip?.tracks.filter((track) => !isAttachmentTargetId(track.targetId) && !isSlotTargetId(track.targetId)) ?? [];
+  const partTracks = clip?.tracks.filter((track) => isAttachmentTargetId(track.targetId) || isSlotTargetId(track.targetId)) ?? [];
   const interpolationLabelKey = (interpolation: MotionSegmentInterpolation) => interpolation.type === "step" ? "animation.interpolation.hold" : interpolation.type === "linear" ? "animation.interpolation.smooth" : "animation.interpolation.cubic";
   const interpolationHintKey = (interpolation: MotionSegmentInterpolation) => interpolation.type === "step" ? "animation.interpolation.holdHint" : interpolation.type === "linear" ? "animation.interpolation.smoothHint" : "animation.interpolation.cubicHint";
   const renderTrack = (track: AnyMotionTrack) => {
     if (!clip) return null;
     const interpolation = segmentInterpolationAt(track);
     const cubic = interpolation?.type === "cubic-bezier" ? interpolation : null;
-    const expanded = track.targetId === selectedTrackTargetId;
+    const expanded = track.targetId === selectedTrackTargetId || (!!selectedPartSlot && track.targetId === `${SLOT_TARGET_PREFIX}${selectedPartSlot.id}`);
+    // 插槽附件轨道是离散换图：不提供插值切换。
+    const discrete = track.property === "attachment";
     return <div className={`animation-track${expanded ? " selected" : ""}`} key={`${track.targetId}-${track.property}`}>
       <span>{trackTargetLabel(track.targetId)} · {t(`animation.channel.${track.property}`)}</span>
       <div className="animation-track-lane" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setPlaying(false); setTime(Math.max(0, Math.min(clip.duration, (event.clientX - bounds.left) / bounds.width * clip.duration))); }}>
         {track.keyframes.map((key, k) => <button className="animation-key-dot" aria-label={`${key.time}s`} key={k} onClick={(event) => { event.stopPropagation(); setTime(key.time); selectTrackTarget(track.targetId); }} style={{ left: `${clip.duration ? key.time / clip.duration * 100 : 0}%` }} />)}
         <b className="animation-playhead" style={{ left: `${clip.duration ? time / clip.duration * 100 : 0}%` }} />
       </div>
-      {expanded
+      {discrete
+        ? <span />
+        : expanded
         ? <div className="animation-track-interpolation"><button className={interpolation?.type === "step" ? "on" : ""} disabled={busy || builtin || !interpolation} title={t("animation.interpolation.holdHint")} onClick={() => void setInterpolation(track.targetId, track.property, { type: "step" })}>{t("animation.interpolation.hold")}</button><button className={interpolation?.type === "linear" ? "on" : ""} disabled={busy || builtin || !interpolation} title={t("animation.interpolation.smoothHint")} onClick={() => void setInterpolation(track.targetId, track.property, { type: "linear" })}>{t("animation.interpolation.smooth")}</button><button className={cubic ? "on" : ""} disabled={busy || builtin || !interpolation} title={t("animation.interpolation.cubicHint")} onClick={() => void setInterpolation(track.targetId, track.property, cubic ?? DEFAULT_CUBIC_MOTION_INTERPOLATION)}>{t("animation.interpolation.cubic")}</button></div>
         : interpolation ? <button type="button" className="animation-interp-chip" disabled={busy} title={t(interpolationHintKey(interpolation))} onClick={() => selectTrackTarget(track.targetId)}>{t(interpolationLabelKey(interpolation))}</button> : <span />}
       {expanded && cubic && <span className="animation-cubic-controls">{(["x1", "y1", "x2", "y2"] as const).map((key) => <label key={key}>{key}<input className="px-input" type="number" min="0" max="1" step="0.01" value={cubic[key]} disabled={busy || builtin} onChange={(event) => { const value = Math.max(0, Math.min(1, Number(event.target.value))); if (Number.isFinite(value)) void setInterpolation(track.targetId, track.property, { ...cubic, [key]: value } as CubicBezierMotionInterpolation); }} /></label>)}</span>}
@@ -1436,6 +1457,8 @@ export default function AnimationAssetsWorkspace({ onOpenProjects, initialAssetI
             <div className="animation-root-fields">{partNumberField("tx", t("animation.partOffsetX"))}{partNumberField("ty", t("animation.partOffsetY"))}</div>
             <div className="animation-root-fields">{partNumberField("sx", t("animation.partScaleX"))}{partNumberField("sy", t("animation.partScaleY"))}</div>
             <div className="animation-root-fields">{partSkewField(0, t("animation.partSkewX"))}{partSkewField(1, t("animation.partSkewY"))}</div>
+            {selectedPartSlot && <><label className="animation-bone-picker">{t("animation.slotShown")}<PxSelect value={selectedSlotShown ?? ""} disabled={busy || builtin} options={[{ value: "", label: t("animation.slotHidden") }, ...previewBinding.attachments.map((attachment) => ({ value: attachment.id, label: attachment.name }))]} onChange={(value) => void setSlotAttachmentKey(value || null)} /></label>
+            <p className="animation-bone-hint">{t("animation.slotShownHint", { name: selectedPartSlot.name })}</p></>}
             <div className="animation-rotation-editor">
               <label>{t("animation.partRotation")}<input type="range" min="-180" max="180" step="1" value={attachmentDraft.rz} disabled={busy || builtin} onChange={(event) => { setPlaying(false); setAttachmentDraft((old) => ({ ...old, rz: +event.target.value })); }} /></label>
               <input className="px-input" type="number" min="-180" max="180" step="1" value={attachmentDraft.rz} disabled={busy || builtin} aria-label={t("animation.partRotation")} onChange={(event) => { setPlaying(false); setAttachmentDraft((old) => ({ ...old, rz: +event.target.value })); }} />

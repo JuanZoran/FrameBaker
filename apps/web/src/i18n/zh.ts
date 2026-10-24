@@ -102,6 +102,8 @@ export const zh = {
   "animation.partHint": "部件偏移叠加在绑定静止位形之上，只影响当前动作；点击画布中的部件选中，拖动平移、拖动圆柄旋转。",
   "animation.partOffsetX": "偏移 X", "animation.partOffsetY": "偏移 Y",
   "animation.partScaleX": "偏移缩放 X", "animation.partScaleY": "偏移缩放 Y",
+  "animation.slotShown": "插槽显示", "animation.slotHidden": "（隐藏）", "animation.slotShownHint": "插槽「{name}」：在播放头处写入保持关键帧，切换为所选图片或隐藏，直到下一个关键帧。",
+  "animation.channel.attachment": "图片",
   "animation.partSkewX": "错切 X（度）", "animation.partSkewY": "错切 Y（度）", "animation.channel.skew": "错切",
   "animation.partRotation": "偏移旋转（度）",
   "animation.partBend": "弯曲（bend）",

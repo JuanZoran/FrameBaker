@@ -144,7 +144,17 @@ export interface SkewTrack extends MotionTrackV1Base {
   keyframes: Array<MotionKey<Vec3>>;
 }
 
-export type MotionTrack = TranslationTrack | RotationTrack | ScaleTrack | DeformTrack | WarpTrack | SkewTrack;
+/** 插槽显示附件通道（仅 slot: 目标合法）：value 为附件 ID 或 null（隐藏），只允许 step 插值，用于逐帧换图与显隐。 */
+export interface SlotAttachmentTrack {
+  targetId: string;
+  property: "attachment";
+  interpolation: "step";
+  keyframes: Array<MotionKey<string | null>>;
+}
+
+export type MotionTrack = TranslationTrack | RotationTrack | ScaleTrack | DeformTrack | WarpTrack | SkewTrack | SlotAttachmentTrack;
+/** 数值通道：可插值的连续轨道属性（不含 step-only 的插槽附件通道）。 */
+export type NumericMotionProperty = Exclude<MotionTrack["property"], "attachment">;
 
 interface MotionTrackV2Base { targetId: string }
 export interface TranslationTrackV2 extends MotionTrackV2Base { property: "translation"; keyframes: Array<MotionKeyV2<Vec3>> }
@@ -153,7 +163,8 @@ export interface ScaleTrackV2 extends MotionTrackV2Base { property: "scale"; key
 export interface DeformTrackV2 extends MotionTrackV2Base { property: "deform"; keyframes: Array<MotionKeyV2<Vec3>> }
 export interface WarpTrackV2 extends MotionTrackV2Base { property: "warp"; keyframes: Array<MotionKeyV2<number[]>> }
 export interface SkewTrackV2 extends MotionTrackV2Base { property: "skew"; keyframes: Array<MotionKeyV2<Vec3>> }
-export type MotionTrackV2 = TranslationTrackV2 | RotationTrackV2 | ScaleTrackV2 | DeformTrackV2 | WarpTrackV2 | SkewTrackV2;
+export interface SlotAttachmentTrackV2 extends MotionTrackV2Base { property: "attachment"; keyframes: Array<MotionKeyV2<string | null>> }
+export type MotionTrackV2 = TranslationTrackV2 | RotationTrackV2 | ScaleTrackV2 | DeformTrackV2 | WarpTrackV2 | SkewTrackV2 | SlotAttachmentTrackV2;
 export type AnyMotionTrack = MotionTrack | MotionTrackV2;
 
 export interface MotionEvent {
@@ -313,11 +324,22 @@ export interface EvaluatedPose {
   worldMatrices: Record<string, Mat4>;
   /** 部件偏移轨道（att: 前缀）的采样值，key 为去掉前缀的 attachmentId；无轨道时为空对象，部件按 rest 渲染。 */
   attachmentOffsets: Record<string, AttachmentOffset>;
+  /** 插槽附件轨道（slot: 前缀）的采样值，key 为去掉前缀的 slotId；null 表示隐藏，缺省表示使用 slot.attachmentId。 */
+  slotAttachments: Record<string, string | null>;
 }
 
 /** 部件偏移轨道的 targetId 前缀：`att:<attachmentId>`；偏移矩阵在「骨骼世界 × 部件 rest」之后叠加。 */
 export const ATTACHMENT_TARGET_PREFIX = "att:";
 export const isAttachmentTargetId = (targetId: string) => targetId.startsWith(ATTACHMENT_TARGET_PREFIX);
+/** 插槽附件轨道的 targetId 前缀：`slot:<slotId>`，只承载 step 的 attachment 通道。 */
+export const SLOT_TARGET_PREFIX = "slot:";
+export const isSlotTargetId = (targetId: string) => targetId.startsWith(SLOT_TARGET_PREFIX);
+
+/** 插槽当前显示的附件：动作采样覆盖优先，null 为隐藏，未覆盖时用绑定的默认附件。 */
+export function resolveSlotAttachmentId(slot: Pick<CharacterSlot, "id" | "attachmentId">, pose: Pick<EvaluatedPose, "slotAttachments"> | undefined): string | null {
+  const override = pose?.slotAttachments[slot.id];
+  return override === undefined ? slot.attachmentId : override;
+}
 
 const EPSILON = 1e-8;
 const QUATERNION_NORM_EPSILON = 1e-4;
@@ -487,7 +509,12 @@ function validateTrack(track: unknown, index: number, duration: number, skeleton
   }
   rejectUnknown(track, version === 1 ? ["targetId", "property", "interpolation", "keyframes"] : ["targetId", "property", "keyframes"], path, issues);
   if (typeof track.targetId !== "string" || !ID_PATTERN.test(track.targetId)) issues.push({ path: `${path}.targetId`, message: "目标 ID 无效" });
-  else if (skeletonIds && !skeletonIds.has(track.targetId) && !isAttachmentTargetId(track.targetId)) issues.push({ path: `${path}.targetId`, message: "目标骨骼不存在" });
+  else if (skeletonIds && !skeletonIds.has(track.targetId) && !isAttachmentTargetId(track.targetId) && !isSlotTargetId(track.targetId)) issues.push({ path: `${path}.targetId`, message: "目标骨骼不存在" });
+  const slotTarget = typeof track.targetId === "string" && isSlotTargetId(track.targetId);
+  if (track.property === "attachment" || slotTarget) {
+    validateSlotAttachmentTrack(track, path, duration, version, issues);
+    return;
+  }
   if (track.property !== "translation" && track.property !== "rotation" && track.property !== "scale" && track.property !== "deform" && track.property !== "warp" && track.property !== "skew") issues.push({ path: `${path}.property`, message: "轨道属性无效" });
   else if ((track.property === "deform" || track.property === "warp" || track.property === "skew") && !(typeof track.targetId === "string" && isAttachmentTargetId(track.targetId))) issues.push({ path: `${path}.property`, message: `${track.property} 轨道仅支持部件（att:）目标` });
   if (version === 1 && track.interpolation !== "step" && track.interpolation !== "linear") issues.push({ path: `${path}.interpolation`, message: "插值方式无效" });
@@ -539,6 +566,49 @@ function validateTrack(track: unknown, index: number, duration: number, skeleton
       } else validateSegmentInterpolation(key.outInterpolation, `${keyPath}.outInterpolation`, issues);
     }
   }
+}
+
+function validateSlotAttachmentTrack(track: Record<string, unknown>, path: string, duration: number, version: 1 | 2, issues: ValidationIssue[]) {
+  if (track.property !== "attachment" || typeof track.targetId !== "string" || !isSlotTargetId(track.targetId)) {
+    issues.push({ path: `${path}.property`, message: "attachment 轨道仅支持插槽（slot:）目标，插槽目标仅支持 attachment 轨道" });
+    return;
+  }
+  if (version === 1 && track.interpolation !== "step") issues.push({ path: `${path}.interpolation`, message: "attachment 轨道只能使用 step 插值" });
+  if (!Array.isArray(track.keyframes) || track.keyframes.length === 0 || track.keyframes.length > ANIMATION_V1_LIMITS.maxKeyframesPerTrack) {
+    issues.push({ path: `${path}.keyframes`, message: "轨道至少需要一个关键帧" });
+    return;
+  }
+  let previous = -Infinity;
+  for (const [keyIndex, key] of track.keyframes.entries()) {
+    const keyPath = `${path}.keyframes[${keyIndex}]`;
+    if (!isRecord(key)) { issues.push({ path: keyPath, message: "必须是关键帧对象" }); continue; }
+    rejectUnknown(key, version === 1 ? ["time", "value"] : ["time", "value", "outInterpolation"], keyPath, issues);
+    if (!isFiniteNumber(key.time) || key.time < 0 || key.time > duration) issues.push({ path: `${keyPath}.time`, message: "时间必须位于动作时长内" });
+    else if (key.time <= previous) issues.push({ path: `${keyPath}.time`, message: "关键帧时间必须严格递增" });
+    else previous = key.time;
+    if (key.value !== null && (typeof key.value !== "string" || !ID_PATTERN.test(key.value))) issues.push({ path: `${keyPath}.value`, message: "必须是附件 ID 或 null" });
+    if (version === 2) {
+      const terminal = keyIndex === track.keyframes.length - 1;
+      if (terminal ? key.outInterpolation !== null : !isRecord(key.outInterpolation) || key.outInterpolation.type !== "step") issues.push({ path: `${keyPath}.outInterpolation`, message: "attachment 轨道片段只能是 step，最后一个关键帧为 null" });
+    }
+  }
+}
+
+/**
+ * 动作与角色绑定的引用闭包：slot: 轨道的插槽与其引用的附件都必须存在于绑定中。
+ * att: 轨道沿用宽松策略（附件被删除后偏移轨道仅被忽略），这里不检查。
+ */
+export function validateMotionClipBindingReferences(clip: MotionClip, binding: CharacterBinding): ValidationIssue[] {
+  const slotIds = new Set(binding.slots.map((slot) => slot.id)), attachmentIds = new Set(binding.attachments.map((attachment) => attachment.id));
+  const issues: ValidationIssue[] = [];
+  clip.tracks.forEach((track, index) => {
+    if (track.property !== "attachment") return;
+    if (!slotIds.has(track.targetId.slice(SLOT_TARGET_PREFIX.length))) issues.push({ path: `tracks[${index}].targetId`, message: "插槽不存在" });
+    track.keyframes.forEach((key, keyIndex) => {
+      if (key.value !== null && !attachmentIds.has(key.value)) issues.push({ path: `tracks[${index}].keyframes[${keyIndex}].value`, message: "附件不存在" });
+    });
+  });
+  return issues;
 }
 
 function validateProvenance(value: unknown, path: string, issues: ValidationIssue[], jsonBudget: JsonNodeBudget) {
@@ -760,7 +830,7 @@ export function migrateMotionClipV1ToV2(clip: MotionClipV1): MotionClipV2 {
         ...base,
         keyframes: track.keyframes.map((key, index) => ({
           time: key.time,
-          value: [...key.value] as Vec3 | Quaternion | number[],
+          value: Array.isArray(key.value) ? [...key.value] as Vec3 | Quaternion | number[] : key.value,
           outInterpolation: index === track.keyframes.length - 1 ? null : { ...interpolation },
         })),
       } as MotionTrackV2;
@@ -788,7 +858,7 @@ export function deleteMotionEvent(clip: MotionClip, index: number): MotionClip {
 export function upsertMotionKeyframe(
   clip: MotionClip,
   targetId: string,
-  property: MotionTrack["property"],
+  property: NumericMotionProperty,
   time: number,
   value: Vec3 | Quaternion | number[],
   epsilon = MOTION_KEY_TIME_EPSILON,
@@ -829,6 +899,21 @@ export function upsertMotionKeyframe(
   return { ...clip, tracks } as MotionClip;
 }
 
+/** 不可变地写入插槽在该时刻显示的附件（null 为隐藏）；轨道固定为 step。 */
+export function upsertSlotAttachmentKeyframe(clip: MotionClip, slotId: string, time: number, attachmentId: string | null, epsilon = MOTION_KEY_TIME_EPSILON): MotionClip {
+  const targetId = `${SLOT_TARGET_PREFIX}${slotId}`;
+  const index = clip.tracks.findIndex((track) => track.targetId === targetId && track.property === "attachment");
+  const old = index >= 0 ? clip.tracks[index]! as SlotAttachmentTrack | SlotAttachmentTrackV2 : undefined;
+  const keys = [...(old?.keyframes ?? [])].filter((key) => Math.abs(key.time - time) > epsilon).concat({ time, value: attachmentId }).sort((a, b) => a.time - b.time);
+  const track = clip.schemaVersion === MOTION_CLIP_SCHEMA_VERSION
+    ? { targetId, property: "attachment" as const, interpolation: "step" as const, keyframes: keys.map(({ time: keyTime, value }) => ({ time: keyTime, value })) }
+    : { targetId, property: "attachment" as const, keyframes: keys.map(({ time: keyTime, value }, keyIndex) => ({ time: keyTime, value, outInterpolation: keyIndex === keys.length - 1 ? null : { type: "step" as const } })) };
+  const tracks = [...clip.tracks] as AnyMotionTrack[];
+  if (index >= 0) tracks[index] = track;
+  else tracks.push(track);
+  return { ...clip, tracks } as MotionClip;
+}
+
 /** 不可变地删除目标骨骼指定通道在该时刻的 key；空轨道同时移除。 */
 export function deleteMotionKeyframe(
   clip: MotionClip,
@@ -858,6 +943,8 @@ export function setMotionSegmentInterpolation(
   time: number,
   interpolation: MotionSegmentInterpolation,
 ): MotionClip {
+  // 插槽附件轨道是离散换图，只允许 step。
+  if (property === "attachment") return clip;
   if (clip.schemaVersion === MOTION_CLIP_SCHEMA_VERSION && interpolation.type !== "cubic-bezier") {
     return { ...clip, tracks: clip.tracks.map((track) => track.targetId === targetId && track.property === property ? { ...track, interpolation: interpolation.type } : track) };
   }
@@ -880,7 +967,7 @@ export function closeMotionLoopSeam(clip: MotionClip, skeleton: Skeleton): Motio
   let result = clip;
   for (const track of clip.tracks) {
     const transform = pose.local[track.targetId];
-    if (!transform) continue;
+    if (!transform || track.property === "attachment") continue;
     const value = track.property === "translation" ? transform.translation : track.property === "rotation" ? transform.rotation : transform.scale;
     result = upsertMotionKeyframe(result, track.targetId, track.property, clip.duration, value);
   }
@@ -947,7 +1034,19 @@ export function sampleCubicBezierMotionAmount(curve: CubicBezierMotionInterpolat
   return cubicBezierCoordinate((low + high) / 2, curve.y1, curve.y2);
 }
 
-function sampleTrack(track: AnyMotionTrack, time: number, version: 1 | 2): Vec3 | Quaternion | number[] {
+/** step 语义：取时间之前最后一个关键帧（首帧之前取首帧）。 */
+function sampleStepValue<T>(keys: readonly MotionKey<T>[], time: number): T {
+  let value = keys[0]!.value;
+  for (const key of keys) {
+    if (key.time > time) break;
+    value = key.value;
+  }
+  return value;
+}
+
+type NumericTrack = Exclude<AnyMotionTrack, SlotAttachmentTrack | SlotAttachmentTrackV2>;
+
+function sampleTrack(track: NumericTrack, time: number, version: 1 | 2): Vec3 | Quaternion | number[] {
   const keys = track.keyframes;
   if (keys.length === 1 || time <= keys[0]!.time) return [...keys[0]!.value] as Vec3 | Quaternion | number[];
   const last = keys[keys.length - 1]!;
@@ -1060,7 +1159,12 @@ export function sampleMotionClip(clip: MotionClip, skeleton: Skeleton, requested
     : Math.max(0, Math.min(requestedTime, clip.duration));
   const local = Object.fromEntries(skeleton.bones.map((bone) => [bone.id, cloneTransform(bone.rest)]));
   const attachmentOffsets: EvaluatedPose["attachmentOffsets"] = {};
+  const slotAttachments: EvaluatedPose["slotAttachments"] = {};
   for (const track of clip.tracks) {
+    if (track.property === "attachment") {
+      slotAttachments[track.targetId.slice(SLOT_TARGET_PREFIX.length)] = sampleStepValue<string | null>(track.keyframes, time);
+      continue;
+    }
     if (isAttachmentTargetId(track.targetId)) {
       const attachmentId = track.targetId.slice(ATTACHMENT_TARGET_PREFIX.length);
       const entry = attachmentOffsets[attachmentId] ?? (attachmentOffsets[attachmentId] = {});
@@ -1107,7 +1211,7 @@ export function sampleMotionClip(clip: MotionClip, skeleton: Skeleton, requested
     }
     if (!progressed) throw new Error("骨架层级无效，无法完成 FK 求值");
   }
-  return { time, local, worldMatrices, attachmentOffsets };
+  return { time, local, worldMatrices, attachmentOffsets, slotAttachments };
 }
 
 export function getBoneEndpoint(pose: EvaluatedPose, skeleton: Skeleton, boneId: string): Vec3 | null {

@@ -461,3 +461,17 @@ MotionClip 除骨骼轨道外，允许 `targetId` 以 `att:` 为前缀（`att:<a
 - 校验上 `att:` 目标跳过「目标骨骼必须存在」检查（attachment 属于项目侧绑定，动作库不持有），其余关键帧/插值校验与骨骼轨道一致（warp 的非 rotation 插值为等长数组逐元素 lerp）；
 - `sampleMotionClip` 返回的 `EvaluatedPose.attachmentOffsets` 以去掉前缀的 attachmentId 为 key 给出当前时刻的偏移采样值（translation/rotation/scale/deformBend/deformWarp/skew）；
 - 动作编辑器在角色预览模式下点击部件即可选中，拖动平移、拖动圆柄旋转、拖动角柄缩放、检查器滑杆调弯曲、数值框调错切、拖拽网格控制点调自由变形，写入/删除关键帧作用于 `att:<id>` 的 translation/rotation/scale/deform/warp/skew 轨道（skew/warp 仅在草稿持有时写入）；时间线轨道行显示部件名。
+
+## 16. 插槽附件轨道（slot: 目标）
+
+用于逐帧换图与显隐（例如受伤表情、换手、隐藏道具），对应 Spine 的 slot attachment timeline 与 Flash/Animate 的逐帧元件切换。
+
+约定：
+
+- `targetId` 为 `slot:<slotId>`，`property` 固定为 `attachment`，两者必须同时出现：插槽目标只承载 attachment 通道，attachment 通道也只能指向插槽目标；
+- 关键帧 `value` 为附件 ID 或 `null`（隐藏）；只允许 step：v1 的 `interpolation` 必须为 `step`，v2 非末尾关键帧的 `outInterpolation` 必须为 `{ "type": "step" }`；`setMotionSegmentInterpolation` 与「全部平滑」不会改动该通道；
+- 采样语义：取时间之前最后一个关键帧，首帧之前取首帧；`EvaluatedPose.slotAttachments` 以 slotId 为 key 给出覆盖值，`resolveSlotAttachmentId(slot, pose)` 在无覆盖时回落到 `slot.attachmentId`；
+- 被切入的附件沿用自身的 rest、deform、warp 与 `att:<attachmentId>` 偏移轨道，挂在插槽的骨骼上，绘制顺序取插槽的 `drawOrder`；
+- 动作库不持有绑定，`validateMotionClip` 只做结构检查；`validateMotionClipBindingReferences(clip, binding)` 检查插槽与附件引用闭包，`.fbanim` v2 打包与校验都会执行该检查；
+- 动作编辑器的部件检查器提供「插槽显示」选择，在播放头写入 step 关键帧，时间线把插槽轨道归入部件分组且不提供插值切换。
+
